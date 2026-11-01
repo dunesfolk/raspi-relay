@@ -7,6 +7,12 @@ changes made here live in RAM and are re-created on the next boot.
 
 If the config is invalid, the interface falls back to DHCP so the Pi stays
 reachable.
+
+Ethernet (eth0): manages its own profile "raspi-relay-eth".
+Wi-Fi (wlan0):   changes only the IP settings of the existing Wi-Fi profile(s)
+                 created by Raspberry Pi Imager; the SSID and password stay
+                 there. Wi-Fi power saving is turned off so requests are not
+                 delayed.
 """
 
 import argparse
@@ -104,15 +110,81 @@ def run(cmd, dry_run, check=True):
     return subprocess.run(cmd, check=check, capture_output=True, text=True)
 
 
+def nmcli_lines(args):
+    """Run a read-only nmcli query in terse mode and return its lines."""
+    out = subprocess.run(["nmcli", "-t"] + args, capture_output=True, text=True).stdout
+    return [line for line in out.splitlines() if line]
+
+
 def connection_exists(dry_run):
     if dry_run:
         return False
-    out = subprocess.run(["nmcli", "-t", "-f", "NAME", "connection", "show"],
-                         capture_output=True, text=True).stdout
-    return CON_NAME in out.splitlines()
+    return CON_NAME in nmcli_lines(["-f", "NAME", "connection", "show"])
 
 
-def apply(iface, settings, dry_run):
+def device_type(iface, dry_run):
+    """'wifi' or 'ethernet' (guessed from the name if NetworkManager doesn't know it)."""
+    guess = "wifi" if iface.startswith("wl") else "ethernet"
+    if dry_run:
+        return guess
+    for line in nmcli_lines(["-f", "DEVICE,TYPE", "device", "status"]):
+        dev, _, typ = line.partition(":")
+        if dev == iface:
+            return typ
+    log.warning("interface %s not found (check 'interface' in the config)", iface)
+    return guess
+
+
+def wifi_profiles(dry_run):
+    """UUIDs of all Wi-Fi profiles (UUIDs contain no ':' so terse output is safe)."""
+    if dry_run:
+        return ["<wifi-profile-uuid>"]
+    uuids = []
+    for line in nmcli_lines(["-f", "UUID,TYPE", "connection", "show"]):
+        uuid, _, typ = line.partition(":")
+        if typ == "802-11-wireless":
+            uuids.append(uuid)
+    return uuids
+
+
+def active_uuid(iface, dry_run):
+    if dry_run:
+        return "<wifi-profile-uuid>"
+    for line in nmcli_lines(["-f", "UUID,DEVICE", "connection", "show", "--active"]):
+        uuid, _, dev = line.partition(":")
+        if dev == iface:
+            return uuid
+    return None
+
+
+def bring_up(con, dry_run):
+    # No cable / no DHCP server / Wi-Fi out of range is not fatal:
+    # NetworkManager keeps retrying because autoconnect is on.
+    r = run(["nmcli", "--wait", "30", "connection", "up", con], dry_run, check=False)
+    if r.returncode != 0:
+        log.warning("connection up failed (will keep retrying): %s",
+                    (r.stderr or r.stdout).strip())
+
+
+def apply_wifi(iface, settings, dry_run):
+    uuids = wifi_profiles(dry_run)
+    if not uuids:
+        log.error("no Wi-Fi profile found. Set the Wi-Fi name and password in "
+                  "Raspberry Pi Imager (or with 'sudo nmtui') first.")
+        return 1
+    for uuid in uuids:
+        run(["nmcli", "connection", "modify", uuid,
+             # 2 = power saving off
+             "802-11-wireless.powersave", "2"] + settings, dry_run)
+    # Re-activate so the new IP settings take effect. If nothing is connected
+    # yet, NetworkManager's autoconnect picks a profile by itself.
+    uuid = active_uuid(iface, dry_run)
+    if uuid:
+        bring_up(uuid, dry_run)
+    return 0
+
+
+def apply_ethernet(iface, settings, dry_run):
     common = ["connection.interface-name", iface,
               "connection.autoconnect", "yes",
               # Higher than the default "Wired connection 1", so ours wins
@@ -122,12 +194,8 @@ def apply(iface, settings, dry_run):
     else:
         run(["nmcli", "connection", "add", "type", "ethernet",
              "con-name", CON_NAME] + common + settings, dry_run)
-    # Bring it up. No cable / no DHCP server is not fatal: NetworkManager keeps
-    # retrying because autoconnect is on.
-    r = run(["nmcli", "--wait", "30", "connection", "up", CON_NAME], dry_run, check=False)
-    if r.returncode != 0:
-        log.warning("connection up failed (will keep retrying): %s",
-                    (r.stderr or r.stdout).strip())
+    bring_up(CON_NAME, dry_run)
+    return 0
 
 
 def main():
@@ -155,12 +223,15 @@ def main():
         log.error("invalid network config: %s -> using DHCP instead", e)
         settings = dhcp_settings()
 
+    kind = device_type(iface, args.dry_run)
+    log.info("interface %s (%s)", iface, kind)
     try:
-        apply(iface, settings, args.dry_run)
+        if kind == "wifi":
+            return apply_wifi(iface, settings, args.dry_run)
+        return apply_ethernet(iface, settings, args.dry_run)
     except subprocess.CalledProcessError as e:
         log.error("nmcli failed: %s", (e.stderr or e.stdout or "").strip())
         return 1
-    return 0
 
 
 if __name__ == "__main__":
