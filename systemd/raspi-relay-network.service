@@ -1,0 +1,14 @@
+[Unit]
+Description=raspi-relay: apply network settings from raspi-relay.conf
+After=NetworkManager.service
+Wants=NetworkManager.service
+Before=network-online.target raspi-relay.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /opt/raspi-relay/raspi_relay/apply_network.py
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target

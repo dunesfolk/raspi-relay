@@ -1,0 +1,23 @@
+[Unit]
+Description=raspi-relay: HTTP server that pulses the relay
+After=raspi-relay-network.service
+Wants=raspi-relay-network.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/raspi-relay/raspi_relay/server.py
+Restart=always
+RestartSec=2
+
+# Run as an unprivileged throwaway user that can only access GPIO
+DynamicUser=yes
+SupplementaryGroups=gpio
+# lgpio writes small helper files to its working directory; keep them in RAM
+RuntimeDirectory=raspi-relay
+WorkingDirectory=/run/raspi-relay
+Environment=LG_WD=/run/raspi-relay
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+[Install]
+WantedBy=multi-user.target
