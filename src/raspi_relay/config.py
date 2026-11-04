@@ -28,6 +28,7 @@ DEFAULTS = {
     },
     "server": {
         "port": "8080",
+        "web_port": "80",
         "bind": "::",
     },
 }
