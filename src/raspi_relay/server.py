@@ -6,23 +6,32 @@ POST /pulse  -> break the circuit for break_seconds (replies immediately)
                 contact=no: relay idle ON,  turned OFF during the break
 POST /rearm  -> end a running break now (reconnect the circuit)
 GET  /health -> "ok"
+GET  /       -> web page with the unlock button (cached by the browser)
 
 Only the Python standard library and gpiozero are used, so it runs on the
 original Raspberry Pi (ARMv6, 256/512 MB RAM).
 """
 
 import argparse
+import hashlib
 import json
 import logging
+import os
 import signal
 import socket
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 from config import load_config
 
 log = logging.getLogger("raspi-relay")
+
+PAGE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+# Browsers reuse the page for this long without asking; after that they
+# revalidate with the ETag and usually get a tiny 304 reply.
+PAGE_MAX_AGE = 86400
 
 
 class FakeRelay:
@@ -104,8 +113,21 @@ class RelayController:
         return True
 
 
+def load_page():
+    """Read the web page once at startup. Returns (bytes, etag) or (None, None)."""
+    try:
+        with open(PAGE_PATH, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        log.warning("web page not loaded (%s)", e)
+        return None, None
+    return data, '"%s"' % hashlib.sha1(data).hexdigest()[:16]
+
+
 class Handler(BaseHTTPRequestHandler):
     controller = None  # set in main()
+    page = None        # index.html bytes, set in main()
+    page_etag = None
     server_version = "raspi-relay/1.0"
 
     def _send(self, code, body):
@@ -113,14 +135,46 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
+
+    def _send_page(self):
+        if self.page is None:
+            return self._send(404, {"result": "not found"})
+        cached = self.headers.get("If-None-Match") == self.page_etag
+        self.send_response(304 if cached else 200)
+        self.send_header("ETag", self.page_etag)
+        self.send_header("Cache-Control", "max-age=%d" % PAGE_MAX_AGE)
+        if cached:
+            self.end_headers()
+            return
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(self.page)))
+        self.end_headers()
+        self.wfile.write(self.page)
+
+    def _foreign_origin(self):
+        """True if a browser sent this from a page served by some other site.
+
+        Stops other web pages from unlocking via a hidden POST. curl and
+        batch files send no Origin header and are not affected.
+        """
+        origin = self.headers.get("Origin")
+        if not origin:
+            return False
+        host = (self.headers.get("Host") or "").lower()
+        return urlsplit(origin).netloc.lower() != host
 
     def do_POST(self):
         # Read and discard any request body so the connection stays clean
         length = int(self.headers.get("Content-Length") or 0)
         if length:
             self.rfile.read(min(length, 65536))
+
+        if self._foreign_origin():
+            log.warning("rejected POST from origin %s", self.headers.get("Origin"))
+            return self._send(403, {"result": "forbidden"})
 
         path = self.path.rstrip("/")
         c = self.controller
@@ -135,8 +189,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {"result": "not found"})
 
     def do_GET(self):
-        if self.path.rstrip("/") == "/health":
+        path = self.path.split("?", 1)[0]
+        if path.rstrip("/") == "/health":
             return self._send(200, {"result": "ok"})
+        if path in ("/", "/index.html"):
+            return self._send_page()
         self._send(404, {"result": "not found"})
 
     def log_message(self, fmt, *args):
@@ -191,18 +248,38 @@ def main():
         contact = "nc"
     idle_on = contact == "no"
     port = cfg.getint("server", "port")
+    web_port = cfg.getint("server", "web_port")
+    web_page = cfg.getboolean("server", "web_page")
     bind = cfg.get("server", "bind").strip() or "::"
 
     relay = make_relay(pin, active_high, idle_on, args.fake_gpio)
     controller = RelayController(relay, break_seconds, idle_on)
     controller.idle()
     Handler.controller = controller
+    if web_page:
+        Handler.page, Handler.page_etag = load_page()
+    else:
+        log.info("web page off (web_page = false)")
 
     srv = make_server(bind, port)
+    servers = [srv]
+    # Second listener (normally port 80) so the page opens as http://{raspi_ip}/
+    # It runs the same handler, so the API works on both ports.
+    # Not opened when the page is off; the API stays on `port`.
+    if web_page and web_port and web_port != port:
+        try:
+            web = make_server(bind, web_port)
+        except OSError as e:
+            log.warning("web port %d not opened (%s)", web_port, e)
+        else:
+            servers.append(web)
+            threading.Thread(target=web.serve_forever, daemon=True).start()
+            log.info("web page on port %d", web_port)
 
     def shutdown(signum, frame):
         log.info("signal %d, shutting down", signum)
-        threading.Thread(target=srv.shutdown, daemon=True).start()
+        for s in servers:
+            threading.Thread(target=s.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
@@ -216,7 +293,8 @@ def main():
         # once this process exits and the GPIO is released.
         controller.idle()
         relay.close()
-        srv.server_close()
+        for s in servers:
+            s.server_close()
         log.info("stopped")
 
 

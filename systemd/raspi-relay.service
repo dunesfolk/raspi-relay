@@ -12,6 +12,8 @@ RestartSec=2
 # Run as an unprivileged throwaway user that can only access GPIO
 DynamicUser=yes
 SupplementaryGroups=gpio
+# Allow listening on port 80 (ports below 1024 normally need root)
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 # lgpio writes small helper files to its working directory; keep them in RAM
 RuntimeDirectory=raspi-relay
 WorkingDirectory=/run/raspi-relay
