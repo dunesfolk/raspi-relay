@@ -38,11 +38,15 @@
     font: .8rem ui-monospace, Consolas, monospace;
   }
   .health {
-    display: flex; align-items: center; justify-content: center; gap: 12px;
+    display: flex; align-items: center; gap: 12px;
     margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line);
   }
   #health {
     padding: 6px 14px; font-size: .9rem; color: var(--text);
+    background: transparent; border: 1px solid var(--line); border-radius: 8px;
+  }
+  #close {
+    margin-left: auto; padding: 6px 14px; font-size: .9rem; color: var(--muted);
     background: transparent; border: 1px solid var(--line); border-radius: 8px;
   }
   #healthStatus { min-width: 5em; font-size: .9rem; font-weight: 600; text-align: left; }
@@ -59,6 +63,7 @@
     <div class="health">
       <button id="health">接続確認</button>
       <span id="healthStatus"></span>
+      <button id="close">閉じる</button>
     </div>
   </div>
 
@@ -128,6 +133,15 @@
     } finally {
       healthBtn.disabled = false;
     }
+  });
+
+  document.getElementById("close").addEventListener("click", () => {
+    window.close();
+    // Browsers only let scripts close tabs that a script opened.
+    setTimeout(() => {
+      show(status, "このタブは手動で閉じてください");
+      raw.textContent = "";
+    }, 200);
   });
 </script>
 </body>
