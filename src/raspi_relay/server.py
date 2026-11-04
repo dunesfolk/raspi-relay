@@ -249,19 +249,24 @@ def main():
     idle_on = contact == "no"
     port = cfg.getint("server", "port")
     web_port = cfg.getint("server", "web_port")
+    web_page = cfg.getboolean("server", "web_page")
     bind = cfg.get("server", "bind").strip() or "::"
 
     relay = make_relay(pin, active_high, idle_on, args.fake_gpio)
     controller = RelayController(relay, break_seconds, idle_on)
     controller.idle()
     Handler.controller = controller
-    Handler.page, Handler.page_etag = load_page()
+    if web_page:
+        Handler.page, Handler.page_etag = load_page()
+    else:
+        log.info("web page off (web_page = false)")
 
     srv = make_server(bind, port)
     servers = [srv]
     # Second listener (normally port 80) so the page opens as http://{raspi_ip}/
     # It runs the same handler, so the API works on both ports.
-    if web_port and web_port != port:
+    # Not opened when the page is off; the API stays on `port`.
+    if web_page and web_port and web_port != port:
         try:
             web = make_server(bind, web_port)
         except OSError as e:
