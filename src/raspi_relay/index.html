@@ -45,10 +45,6 @@
     padding: 6px 14px; font-size: .9rem; color: var(--text);
     background: transparent; border: 1px solid var(--line); border-radius: 8px;
   }
-  #close {
-    margin-left: auto; padding: 6px 14px; font-size: .9rem; color: var(--muted);
-    background: transparent; border: 1px solid var(--line); border-radius: 8px;
-  }
   #healthStatus { min-width: 5em; font-size: .9rem; font-weight: 600; text-align: left; }
   .ok { color: var(--ok); }
   .busy { color: var(--warn); }
@@ -63,12 +59,12 @@
     <div class="health">
       <button id="health">接続確認</button>
       <span id="healthStatus"></span>
-      <button id="close">閉じる</button>
     </div>
   </div>
 
 <script>
   const TIMEOUT_MS = 5000;
+  const MESSAGE_MS = 10000; // how long result messages stay on screen
 
   // fetch() that gives up after TIMEOUT_MS. Returns [response, text].
   async function request(path, method) {
@@ -91,11 +87,20 @@
     el.className = cls || "";
   }
 
+  // Runs clearFn after MESSAGE_MS. Returns a function that cancels it.
+  function clearLater(clearFn) {
+    const timer = setTimeout(clearFn, MESSAGE_MS);
+    return () => clearTimeout(timer);
+  }
+
   const pulseBtn = document.getElementById("pulse");
   const status = document.getElementById("status");
   const raw = document.getElementById("raw");
 
+  let cancelPulseClear = () => {};
+
   pulseBtn.addEventListener("click", async () => {
+    cancelPulseClear();
     pulseBtn.disabled = true;
     show(status, "送信中…");
     raw.textContent = "";
@@ -115,13 +120,20 @@
       show(status, "エラー：応答がありませんでした", "err");
     } finally {
       pulseBtn.disabled = false;
+      cancelPulseClear = clearLater(() => {
+        show(status, "");
+        raw.textContent = "";
+      });
     }
   });
 
   const healthBtn = document.getElementById("health");
   const healthStatus = document.getElementById("healthStatus");
 
+  let cancelHealthClear = () => {};
+
   healthBtn.addEventListener("click", async () => {
+    cancelHealthClear();
     healthBtn.disabled = true;
     show(healthStatus, "確認中…");
     try {
@@ -132,16 +144,8 @@
       show(healthStatus, "接続エラー", "err");
     } finally {
       healthBtn.disabled = false;
+      cancelHealthClear = clearLater(() => show(healthStatus, ""));
     }
-  });
-
-  document.getElementById("close").addEventListener("click", () => {
-    window.close();
-    // Browsers only let scripts close tabs that a script opened.
-    setTimeout(() => {
-      show(status, "このタブは手動で閉じてください");
-      raw.textContent = "";
-    }, 200);
   });
 </script>
 </body>
